@@ -4,11 +4,12 @@ from random import random
 from math import log2
 import pickle
 from operator import itemgetter
+import networkx as nx
+import matplotlib.pyplot as plt
 
 class HNSW(object):
     def __init__(self, distance_type, m=5, ef=200, m0=None, vectorized=False):
         self.data = []
-        # Select the distance function based on the specified type
         if distance_type == "euclidean":
             self.distance_func = self.l2_distance
         elif distance_type == "cosine":
@@ -33,15 +34,12 @@ class HNSW(object):
         self._enter_point = None
 
     def l2_distance(self, a, b):
-        """Compute the L2 (Euclidean) distance between vectors a and b."""
         return np.linalg.norm(a - b)
     
     def mips_distance(self, a, b):
-        """Compute the maximum inner product (MIPS) distance between vectors a and b."""
         return np.dot(a, b)
 
     def cosine_distance(self, a, b):
-        """Compute the cosine distance between vectors a and b."""
         try:
             return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
         except ValueError:
@@ -49,15 +47,12 @@ class HNSW(object):
             print(b)
 
     def _distance(self, x, y):
-        """Compute the distance between vectors x and y using the selected distance function."""
         return self.distance_func(x, [y])[0]
 
     def vectorized_distance_(self, x, ys):
-        """Compute the distance between vector x and a list of vectors ys using the selected distance function."""
         return [self.distance_func(x, y) for y in ys]
 
     def add(self, elem, ef=None):
-        """Add an element to the HNSW structure."""
         if ef is None:
             ef = self._ef
 
@@ -68,6 +63,7 @@ class HNSW(object):
         m = self._m
 
         level = int(-log2(random()) * self._level_mult) + 1
+        
         idx = len(data)
         data.append(elem)
 
@@ -89,7 +85,6 @@ class HNSW(object):
             self._enter_point = idx
 
     def search(self, q, k=None, ef=None):
-        """Search for the nearest neighbors of query vector q."""
         if ef is None:
             ef = self._ef
 
@@ -111,7 +106,6 @@ class HNSW(object):
         return list(distances), list(indices)
 
     def _search_graph_ef1(self, q, entry, dist, layer):
-        """Search for the closest neighbor in a specific layer."""
         vectorized_distance = self.vectorized_distance
         data = self.data
 
@@ -136,7 +130,6 @@ class HNSW(object):
         return best, best_dist
 
     def _search_graph(self, q, ep, layer, ef):
-        """Search for neighbors in a specific layer."""
         vectorized_distance = self.vectorized_distance
         data = self.data
 
@@ -167,7 +160,6 @@ class HNSW(object):
         return ep
 
     def _select_naive(self, d, to_insert, m, layer, heap=False):
-        """Select the nearest neighbors without using heuristics."""
         if not heap:
             idx, dist = to_insert
             assert idx not in d
@@ -192,15 +184,28 @@ class HNSW(object):
             checked_del = []
         for md, idx in to_insert:
             d[idx] = -md
+            # Shrink the connections of the neighbors
+            if len(layer[idx]) > m:
+                self._shrink_connections(layer, idx, m)
+
         zipped = zip(checked_ins, checked_del)
         for (md_new, idx_new), (idx_old, d_old) in zipped:
             if d_old <= -md_new:
                 break
             del d[idx_old]
             d[idx_new] = -md
+            # Shrink the connections of the neighbors
+            if len(layer[idx_new]) > m:
+                self._shrink_connections(layer, idx_new, m)
+
+
+    def _shrink_connections(self, layer, node, max_edges):
+        neighbors = list(layer[node].items())
+        if len(neighbors) > max_edges:
+            neighbors = nlargest(max_edges, neighbors, key=itemgetter(1))
+            layer[node] = dict(neighbors)
 
     def __getitem__(self, idx):
-        """Get the items in the layer of the graph at index idx."""
         for g in self._graphs:
             try:
                 yield from g[idx].items()
@@ -208,16 +213,38 @@ class HNSW(object):
                 return
 
     def save_graph(self, filename):
-        """Save the graph to a file."""
         with open(filename, 'wb') as f:
             pickle.dump((self.data, self._graphs, self._enter_point), f)
 
     def load_graph(self, filename):
-        """Load the graph from a file."""
         with open(filename, 'rb') as f:
             self.data, self._graphs, self._enter_point = pickle.load(f)
 
     def print_layer_sizes(self):
-        """Print the sizes of each layer in the graph."""
         for i, layer in enumerate(self._graphs):
             print(f"Layer {i}: {len(layer)} elements")
+
+    def visualize_layers(self):
+        """Visualize each layer of the HNSW graph using data values as node coordinates."""
+        # Use data values as node positions
+        pos = {i: self.data[i] for i in range(len(self.data))}
+
+        for i, layer in enumerate(self._graphs):
+            G = nx.Graph()
+            for node, edges in layer.items():
+                for neighbor in edges:
+                    G.add_edge(node, neighbor)
+            
+            plt.figure(figsize=(8, 6))
+            nx.draw(G, pos, with_labels=True, node_size=500, node_color="lightblue", font_size=10, font_weight="bold")
+            plt.title(f"Layer {i}")
+            
+            # Set axis labels and show axes
+            plt.xlabel('X-axis')
+            plt.ylabel('Y-axis')
+            plt.grid(True)
+            plt.axis('on')
+
+            plt.show()
+
+
