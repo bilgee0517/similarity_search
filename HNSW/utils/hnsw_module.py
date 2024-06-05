@@ -98,39 +98,17 @@ class HNSW(object):
 
         dist = self.distance(q, self.data[self._enter_point])
         point = self._enter_point
-
-        # Traverse the graph from the top layer to the 2nd layer
         for layer in reversed(self._graphs[1:]):
             point, dist = self._search_graph_ef1(q, point, dist, layer)
-
-        # Use a bounded priority queue to track the closest candidates
-        candidates = [(-dist, point)]
-        heapify(candidates)
-        visited = {point}
-        results = []
-
-        while candidates:
-            dist, c = heappop(candidates)
-            if len(results) >= ef and dist > -results[0][0]:
-                break
-
-            for neighbor in self._graphs[0][c]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    d = self.distance(q, self.data[neighbor])
-                    if len(results) < ef:
-                        heappush(results, (-d, neighbor))
-                        heappush(candidates, (d, neighbor))
-                    elif -d > results[0][0]:
-                        heapreplace(results, (-d, neighbor))
-                        heappush(candidates, (d, neighbor))
+        ep = self._search_graph(q, [(-dist, point)], self._graphs[0], ef)
 
         if k is not None:
-            results = nlargest(k, results)
-        
-        distances, indices = zip(*[(-md, idx) for md, idx in results])
-        return list(distances), list(indices)
+            ep = nlargest(k, ep)
+        else:
+            ep.sort(reverse=True)
 
+        indices, distances = zip(*[(idx, -md) for md, idx in ep])
+        return list(distances), list(indices)
 
     def _search_graph_ef1(self, q, entry, dist, layer):
         """Search for the closest neighbor in a specific layer."""
@@ -162,44 +140,31 @@ class HNSW(object):
         vectorized_distance = self.vectorized_distance
         data = self.data
 
-        # Initialize the priority queue with the entry points
         candidates = [(-mdist, p) for mdist, p in ep]
         heapify(candidates)
         visited = set(p for _, p in ep)
 
-        # Initialize the max reference distance
-        mref = ep[0][0]
-
         while candidates:
             dist, c = heappop(candidates)
+            mref = ep[0][0]
             if dist > -mref:
                 break
 
-            # Get the neighbors of the current node that have not been visited
             edges = [e for e in layer[c] if e not in visited]
-            if not edges:
-                continue
-
             visited.update(edges)
-
-            # Calculate distances from the query vector to the neighbors
-            edge_data = [data[e] for e in edges]
-            dists = vectorized_distance(q, edge_data)
-            
+            dists = vectorized_distance(q, [data[e] for e in edges])
             for e, dist in zip(edges, dists):
                 mdist = -dist
                 if len(ep) < ef:
                     heappush(candidates, (dist, e))
                     heappush(ep, (mdist, e))
-                    if -mdist > mref:
-                        mref = -mdist
-                elif -dist < -mref:
+                    mref = ep[0][0]
+                elif mdist > mref:
                     heappush(candidates, (dist, e))
                     heapreplace(ep, (mdist, e))
                     mref = ep[0][0]
 
         return ep
-
 
     def _select_naive(self, d, to_insert, m, layer, heap=False):
         """Select the nearest neighbors without using heuristics."""
